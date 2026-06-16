@@ -1,0 +1,69 @@
+CLINICAL LOGIC AND DATA INTEGRITY JUSTIFICATIONS
+--------------------------------------------------------------------
+
+This document outlines the clinical invariants, mathematical checks, 
+and data leakage prevention strategies applied during the data 
+preprocessing phase (via the `apply_clinical_logic` function).
+
+1. PAIRWISE CONTRADICTIONS (LOGICAL ERRORS)
+These checks identify variables that are mutually exclusive in a 
+valid clinical reality. In cases of conflict (e.g., both flags = 1), 
+the values are nullified (set to NaN) as they represent irresolvable 
+data-entry errors.
+
+  1.1. Weight Invariant (Pre-pregnancy vs. Admission)
+       Clinical logic dictates that a patient's pre-pregnancy weight 
+       must be less than or equal to their weight at admission for 
+       delivery, accounting for gestational weight gain. 
+
+  1.2. Amniotic Fluid Invariant (Polyhydramnios vs. Oligohydramnios)
+       A patient cannot present with both excessive amniotic fluid 
+       (polyhydramnios) and insufficient amniotic fluid 
+       (oligohydramnios) during the same pregnancy. 
+
+  1.3. Hypertension Type Invariant
+       Based on ICD-9 coding conventions, chronic hypertension 
+       (pre-existing) and gestational hypertension (pregnancy-induced) 
+       are mutually exclusive primary classifications. 
+
+  1.4. Delivery Pathway Invariant (Planned CS vs. Induction)
+       A patient scheduled for an elective, planned Cesarean section 
+       does not undergo pharmacological labor induction. If both 
+       'was_planned_cs' and 'induction' are positive, the induction 
+       flag is nullified.
+
+  1.5. Temporal Invariant (Admission vs. Birth Date)
+       Chronologically, the admission date must precede or equal the 
+       birth date. 
+
+2. DERIVED VARIABLES AND MATHEMATICAL INVARIANTS
+These checks ensure that derived features mathematically align with 
+their source components.
+
+  2.1. HTN Cluster Recalculation (The HTN Cluster)
+       The overarching variable 'any_htn' must be the absolute maximum 
+       of its components ('chronic_htn', 'gestational_htn', 'preeclampsia'). 
+       To enforce structural truth, 'any_htn' is strictly recalculated 
+       from these components.
+
+  2.2. BMI Mathematical Verification
+       The provided computed BMI is verified against the standard formula: 
+       Weight / (Height in meters)^2. Discrepancies larger than 1.0 
+       (accounting for minor rounding differences) are treated as math 
+       errors and overwritten with the correct calculation.
+
+3. DATA LEAKAGE PREVENTION
+Variables containing future information (post-prediction-time) are 
+strictly removed to prevent target leakage.
+
+  3.1. Exclusion of Birth Weight ('birth_weight_g')
+       Neonatal birth weight is determined post-delivery and is inherently 
+       unavailable at the triage/admission decision point. It is completely 
+       dropped from the feature space.
+
+  3.2. Note on Meconium and Membrane Color
+       While 'meconium' is retained per project guidelines (as it often 
+       manifests early in labor), it is acknowledged as a borderline 
+       data-leakage variable since membrane rupture may occur intrapartum. 
+       This will be documented formally in the Study Limitations section.
+--------------------------------------------------------------------

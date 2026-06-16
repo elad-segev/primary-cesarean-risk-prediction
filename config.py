@@ -85,6 +85,8 @@ CATEGORICAL_VARS: list[str] = []
 #   sensitivity analysis cohort (smaller effective N after complete-case drop).
 MAIN_MODEL_VARS: list[str] = []
 SENSITIVITY_VARS: list[str] = []
+LIMITATION_VARS: list[str] = []
+
 
 # Directory where split / cleaned datasets are written by data_prep.py.
 PROCESSED_DATA_DIR: str = "data/processed/"

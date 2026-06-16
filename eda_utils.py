@@ -857,11 +857,9 @@ def chi2_matrices(df: pd.DataFrame, cat_vars: List[str]) -> Tuple[pd.DataFrame, 
                 
                 cv = _cramers_v(ct)
                 
-                # הזנת הנתונים למשולש העליון
                 cramers_v.loc[col1, col2] = cv
                 pval_matrix.loc[col1, col2] = p
                 
-                # שכפול למשולש התחתון
                 cramers_v.loc[col2, col1] = cv
                 pval_matrix.loc[col2, col1] = p
 
@@ -1135,6 +1133,190 @@ def plot_statistical_heatmaps(pval_matrix: pd.DataFrame, effect_matrix: Optional
 
 
 # I STOPED HERE 
+def apply_clinical_logic(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Applies clinical validation rules, resolves logical contradictions, recalculates
+    derived clinical variables, and removes variables that may introduce data leakage.
+
+    The function performs several categories of clinical data quality checks:
+
+    1. Pairwise clinical contradictions:
+    - Detects impossible or conflicting combinations between related variables.
+    - Invalid values are replaced with NaN to preserve uncertainty rather than
+        forcing an incorrect value.
+
+    Examples:
+    - Pre-pregnancy weight greater than or equal to admission weight.
+    - Simultaneous presence of incompatible amniotic fluid conditions.
+    - Conflicting hypertension categories.
+    - Planned cesarean section combined with induction.
+    - Admission date occurring after birth date.
+
+    2. Derived variable verification:
+    - Recalculates variables that should be mathematically derived.
+    - Ensures consistency between component variables and aggregated indicators.
+
+    Examples:
+    - Recomputes any_htn from hypertension components.
+    - Validates BMI calculation from weight and height.
+
+    3. Data leakage prevention:
+    - Removes variables that would not be available at the prediction time.
+    - Prevents models from using future information.
+
+    The function also generates an audit report describing:
+    - The detected issue.
+    - The action performed.
+    - Number of affected rows.
+
+    :param df: Input clinical dataset.
+    :type df: pandas.DataFrame
+
+    :return:
+        Tuple containing:
+        - Cleaned DataFrame after applying clinical rules.
+        - DataFrame summarizing all performed actions.
+    :rtype: Tuple[pandas.DataFrame, pandas.DataFrame]
+    """
+    df_clean = df.copy()
+    action_logs = []
+
+    # ==========================================
+    # 1. Pairwise Contradictions (Ref: Doc Sec 1 - methodology_justifications.txt)
+    # ==========================================
+    
+    # Ref 1.1: Weight Invariant
+    if 'weight_pre_pregnancy' in df_clean.columns and 'weight_at_admission' in df_clean.columns:
+        invalid_weight = df_clean['weight_pre_pregnancy'] >= df_clean['weight_at_admission']
+        n_invalid = invalid_weight.sum()
+        if n_invalid > 0:
+            action_logs.append({
+                "Category": "1. Pairwise Contradictions",
+                "Issue": "Pre-pregnancy weight >= Admission weight",
+                "Action Taken": "Set weights to NaN",
+                "Affected Rows": n_invalid
+            })
+            df_clean.loc[invalid_weight, ['weight_pre_pregnancy', 'weight_at_admission']] = np.nan
+
+    # Ref 1.2: Amniotic Fluid Invariant
+    if 'polyhydramnios' in df_clean.columns and 'oligohydramnios' in df_clean.columns:
+        invalid_fluid = (df_clean['polyhydramnios'] == 1) & (df_clean['oligohydramnios'] == 1)
+        n_invalid = invalid_fluid.sum()
+        if n_invalid > 0:
+            action_logs.append({
+                "Category": "1. Pairwise Contradictions",
+                "Issue": "Both polyhydramnios and oligohydramnios == 1",
+                "Action Taken": "Set both flags to NaN",
+                "Affected Rows": n_invalid
+            })
+            df_clean.loc[invalid_fluid, ['polyhydramnios', 'oligohydramnios']] = np.nan
+
+    # Ref 1.3: Hypertension Type Invariant
+    if 'chronic_htn' in df_clean.columns and 'gestational_htn' in df_clean.columns:
+        invalid_htn = (df_clean['chronic_htn'] == 1) & (df_clean['gestational_htn'] == 1)
+        n_invalid = invalid_htn.sum()
+        if n_invalid > 0:
+            action_logs.append({
+                "Category": "1. Pairwise Contradictions",
+                "Issue": "Both chronic and gestational HTN == 1",
+                "Action Taken": "Set both HTN flags to NaN",
+                "Affected Rows": n_invalid
+            })
+            df_clean.loc[invalid_htn, ['chronic_htn', 'gestational_htn']] = np.nan
+
+    # Ref 1.4: Delivery Pathway Invariant
+    if 'was_planned_cs' in df_clean.columns and 'induction' in df_clean.columns:
+        invalid_induction = (df_clean['was_planned_cs'] == 1) & (df_clean['induction'] == 1)
+        n_invalid = invalid_induction.sum()
+        if n_invalid > 0:
+            action_logs.append({
+                "Category": "1. Pairwise Contradictions",
+                "Issue": "Planned CS marked with Induction",
+                "Action Taken": "Set induction to NaN",
+                "Affected Rows": n_invalid
+            })
+            df_clean.loc[invalid_induction, 'induction'] = np.nan
+
+    # Ref 1.5: Temporal Invariant
+    if 'admission_date' in df_clean.columns and 'birth_date' in df_clean.columns:
+        invalid_dates = df_clean['admission_date'] > df_clean['birth_date']
+        n_invalid = invalid_dates.sum()
+        if n_invalid > 0:
+            action_logs.append({
+                "Category": "1. Pairwise Contradictions",
+                "Issue": "Admission date > Birth date",
+                "Action Taken": "Set both dates to NaN",
+                "Affected Rows": n_invalid
+            })
+            df_clean.loc[invalid_dates, ['admission_date', 'birth_date']] = np.nan
+
+    # ==========================================
+    # 2. Derived & Math Invariants (Ref: Doc Sec 2)
+    # ==========================================
+    
+    # Ref 2.1: HTN Cluster Recalculation
+    htn_components = ['chronic_htn', 'gestational_htn', 'preeclampsia']
+    if all(col in df_clean.columns for col in htn_components) and 'any_htn' in df_clean.columns:
+        original_any_htn = df_clean['any_htn'].copy()
+        df_clean['any_htn'] = df_clean[htn_components].max(axis=1)
+        
+        # Check if the recalculation actually changed any values
+        n_changed = (original_any_htn != df_clean['any_htn']).sum()
+        if n_changed > 0:
+            action_logs.append({
+                "Category": "2. Derived Variables",
+                "Issue": "'any_htn' did not match the maximum of its components",
+                "Action Taken": "Recalculated 'any_htn'",
+                "Affected Rows": n_changed
+            })
+        
+    # Ref 2.2: BMI Mathematical Verification
+    if all(col in df_clean.columns for col in ['weight_pre_pregnancy', 'height_cm', 'bmi_computed']):
+        expected_bmi = df_clean['weight_pre_pregnancy'] / ((df_clean['height_cm'] / 100) ** 2)
+        bad_bmi_math = abs(df_clean['bmi_computed'] - expected_bmi) > 1.0
+        n_bad_bmi = bad_bmi_math.sum()
+        if n_bad_bmi > 0:
+            action_logs.append({
+                "Category": "2. Derived Variables",
+                "Issue": "BMI math error (diff > 1.0 from weight/height^2)",
+                "Action Taken": "Overwrote with calculated BMI",
+                "Affected Rows": n_bad_bmi
+            })
+            df_clean.loc[bad_bmi_math, 'bmi_computed'] = expected_bmi[bad_bmi_math]
+
+    # ==========================================
+    # 3. Data Leakage Prevention (Ref: Doc Sec 3)
+    # ==========================================
+    
+    # Ref 3.1: Exclusion of Birth Weight
+    if 'birth_weight_g' in df_clean.columns:
+        action_logs.append({
+            "Category": "3. Data Leakage Prevention",
+            "Issue": "Variable 'birth_weight_g' is unavailable at admission",
+            "Action Taken": "Dropped column",
+            "Affected Rows": len(df_clean) # The whole column is dropped
+        })
+        df_clean = df_clean.drop(columns=['birth_weight_g'])
+
+    # ==========================================
+    # Wrap up and return
+    # ==========================================
+    
+    # If no issues were found, add a clean bill of health to the log
+    if not action_logs:
+        action_logs.append({
+            "Category": "General",
+            "Issue": "No clinical logic violations found",
+            "Action Taken": "None",
+            "Affected Rows": 0
+        })
+
+    report_df = pd.DataFrame(action_logs)
+    
+    return df_clean, report_df
+
+
+
 # ---------------------------------------------------------------------------
 # Missingness analysis  (MCAR vs MAR)
 # ---------------------------------------------------------------------------
@@ -1339,3 +1521,20 @@ def detect_rare_categories(
         )
 
     return rare
+
+
+
+# ---------------------------------------------------------------------------
+# Dealing with missing values
+# ---------------------------------------------------------------------------
+
+def apply_complete_case_analysis(df: pd.DataFrame, required_cols: list) -> pd.DataFrame:
+
+    original_n = len(df)
+    
+    df_complete = df.dropna(subset=required_cols).copy()
+    
+    effective_n = len(df_complete)
+    dropped_n = original_n - effective_n
+    
+    return df_complete , (dropped_n, round((dropped_n / original_n) * 100, 2))

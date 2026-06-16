@@ -1,14 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-EDA utility functions for clinical predictive modelling.
-
-Design constraints
-------------------
-- Complete-case analysis only: no imputation of any kind.
-- Outlier detection is for inspection only; rows are never dropped here.
-- All missing-value percentages are returned as raw floats for downstream
-  arithmetic (not formatted strings).
-"""
 import math
 import matplotlib.pyplot as plt
 import numpy as np
@@ -17,6 +6,8 @@ import seaborn as sns
 from scipy import stats
 import config as c
 from typing import List, Tuple, Optional
+
+# EDA Pipeline Functions
 
 # ---------------------------------------------------------------------------
 # Descriptive summary tables
@@ -1131,8 +1122,9 @@ def plot_statistical_heatmaps(pval_matrix: pd.DataFrame, effect_matrix: Optional
         plt.close(fig)
 
 
-
-# I STOPED HERE 
+# ---------------------------------------------------------------------------
+# Treatment of clinical abnormalities
+# ---------------------------------------------------------------------------
 def apply_clinical_logic(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Applies clinical validation rules, resolves logical contradictions, recalculates
@@ -1523,18 +1515,3 @@ def detect_rare_categories(
     return rare
 
 
-
-# ---------------------------------------------------------------------------
-# Dealing with missing values
-# ---------------------------------------------------------------------------
-
-def apply_complete_case_analysis(df: pd.DataFrame, required_cols: list) -> pd.DataFrame:
-
-    original_n = len(df)
-    
-    df_complete = df.dropna(subset=required_cols).copy()
-    
-    effective_n = len(df_complete)
-    dropped_n = original_n - effective_n
-    
-    return df_complete , (dropped_n, round((dropped_n / original_n) * 100, 2))

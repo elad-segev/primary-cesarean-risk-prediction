@@ -1,9 +1,5 @@
-# -*- coding: utf-8 -*-
-"""
-Project-level configuration — single source of truth for all constants.
-No logic lives here; only paths, variable names, and scalar settings.
-"""
 import pandas as pd
+# configuration
 
 OUTPUT_DIR: str = "output"
 

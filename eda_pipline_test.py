@@ -1,17 +1,14 @@
 import eda_utils as eu
 import config as c
 
-df = c.HOLY_DATA.copy()
+pre_df = c.HOLY_DATA.copy()
 
-X = eu.apply_data_schema(df, c.gdm_schema)
+df = eu.apply_data_schema(pre_df, c.gdm_schema)
 
-"""print(eu.describe_numerical(X))
-print('\n\n')
-print(eu.describe_categorical(X))
-print('\n\n')"""
 
-eu.visualize_feature_distributions(X)
+x, y, z = eu.visualize_outliers_and_proportions(df, )
 
+print(x,y,z, sep="\n\n")
 
 
 

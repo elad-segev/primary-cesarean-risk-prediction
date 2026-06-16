@@ -9,16 +9,13 @@ Design constraints
 - All missing-value percentages are returned as raw floats for downstream
   arithmetic (not formatted strings).
 """
-
-from __future__ import annotations
-
 import math
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
 from scipy import stats
+import config as c
 
 
 # ---------------------------------------------------------------------------
@@ -26,55 +23,141 @@ from scipy import stats
 # ---------------------------------------------------------------------------
 
 def describe_numerical(df: pd.DataFrame) -> pd.DataFrame:
-    """Return a descriptive summary for every numeric column in *df*.
-
-    Parameters
-    ----------
-    df:
-        DataFrame whose numeric columns are to be summarised.  Mixed-type
-        DataFrames are accepted; non-numeric columns are ignored.
-
-    Returns
-    -------
-    pd.DataFrame
-        One row per numeric variable with columns:
-        count, range, min, max, mean, 25%, 50%, 75%, std,
-        missing_count, missing_pct (raw float, 0–100), data_type.
     """
-    summary = round(df.describe(), 4).T
-    summary["missing_count"] = df.isnull().sum()
-    summary["missing_pct"] = (df.isnull().sum() / len(df)) * 100
+    Creates an extended statistical summary table for numerical columns in a DataFrame.
+
+    The function analyzes numerical features and calculates descriptive statistics
+    together with additional distribution and data quality metrics.
+
+    The summary includes:
+    - Basic statistics: count, minimum, maximum, mean, median, quartiles, and standard deviation.
+    - Value range (max - min).
+    - Missing value count and percentage.
+    - Column data types.
+    - Mode values.
+    - Mean, median, and mode similarity check (within 10% proximity).
+    - Skewness and kurtosis measurements.
+    - Percentage of values within three standard deviations from the mean.
+
+    :param df: Input pandas DataFrame containing numerical columns.
+    :type df: pandas.DataFrame
+    :return: Extended summary DataFrame describing each numerical column.
+    :rtype: pandas.DataFrame
+    """
+
+    num_df = df.select_dtypes(include=[np.number])
+    summary = round(num_df.describe(), 4).T
+    summary["missing_count"] = num_df.isnull().sum()
+    summary["missing_pct"] = round((num_df.isnull().sum() / len(df)) * 100, 3)
     summary["range"] = summary["max"] - summary["min"]
-    summary["data_type"] = df.dtypes
+    summary["data_type"] = num_df.dtypes
+
+    summary["mode"] = round(num_df.mode().iloc[0], 4)
+
+
+    # Auxiliary function for checking 10% proximity
+    def check_mmm_similarity(row):
+        mean_val, median_val, mode_val = row["mean"], row["50%"], row["mode"]
+        
+        if pd.isna(mean_val) or pd.isna(median_val) or pd.isna(mode_val):
+            return False
+
+        def is_close(x, y):
+            m = (x + y) / 2
+            return x == y if m == 0 else abs(x - y) / abs(m) <= 0.10
+
+        return (is_close(mean_val, median_val) and 
+                is_close(mean_val, mode_val) and 
+                is_close(median_val, mode_val))
+
+    # Run the test on each row (original column) in the summary table
+    summary["MMM_Similar"] = summary.apply(check_mmm_similarity, axis=1)
+
+    # Skewness, Kurtosis 
+    summary["skewness"] = round(num_df.skew(), 3)
+    summary["kurtosis"] = round(num_df.kurt(), 3)
+
+    # Calculate the percentage of data within 3 standard deviations
+    def get_pct_within_3sd(col_name):
+        s = num_df[col_name].dropna()
+        mean_val = summary.loc[col_name, "mean"]
+        std_val = summary.loc[col_name, "std"]
+        
+        # If there is no standard deviation - return NaN
+        if pd.isna(std_val) or std_val == 0:
+            return np.nan
+            
+        lower_bound = mean_val - 3 * std_val
+        upper_bound = mean_val + 3 * std_val
+        return round(((s >= lower_bound) & (s <= upper_bound)).mean() * 100, 2)
+
+    summary["pct_within_3sd"] = [get_pct_within_3sd(col) for col in summary.index]
 
     col_order = [
-        "count", "range", "min", "max", "mean",
-        "25%", "50%", "75%", "std",
-        "missing_count", "missing_pct", "data_type",
+        "count", "min", "max", "range",
+        "mean", "50%", "mode","std", 
+        "MMM_Similar", "skewness", "kurtosis", "pct_within_3sd",
+        "25%", "75%", "missing_count", "missing_pct", "data_type"
     ]
+    
     return summary[col_order]
 
 
 def describe_categorical(df: pd.DataFrame) -> pd.DataFrame:
-    """Return a descriptive summary for every non-numeric column in *df*.
+    """
+    Creates a detailed statistical summary for categorical columns in a DataFrame.
 
-    Parameters
-    ----------
-    df:
-        DataFrame whose categorical / object columns are summarised.
+    The function iterates through all non-numerical columns and computes
+    key categorical statistics for each feature.
 
-    Returns
-    -------
-    pd.DataFrame
-        One row per categorical variable with the standard `describe` columns
-        (count, unique, top, freq) plus missing_count, missing_pct (raw float,
-        0–100), and data_type.
+    For each column, it calculates:
+    - Number of non-missing values.
+    - Number of unique values.
+    - Most frequent value (mode).
+    - Frequency of the most common value.
+    - Missing value count and percentage.
+    - Original data type.
+
+    The function is robust to empty columns and handles missing values safely.
+
+    :param df: Input pandas DataFrame containing categorical columns.
+    :type df: pandas.DataFrame
+    :return: Summary DataFrame indexed by variable name.
+    :rtype: pandas.DataFrame
     """
     cat_df = df.select_dtypes(exclude=["number"])
-    summary = cat_df.describe().T
-    summary["missing_count"] = df.isnull().sum()
-    summary["missing_pct"] = (df.isnull().sum() / len(df)) * 100
-    summary["data_type"] = df.dtypes
+    
+    summary_list = []
+    
+    for col in cat_df.columns:
+        col_data = cat_df[col].dropna()
+        
+        if col_data.empty:
+            unique_count = 0
+            top_val = np.nan
+            freq_val = 0
+
+        else:
+            unique_count = col_data.nunique()
+            top_val = col_data.mode().iloc[0]
+            freq_val = col_data.value_counts().iloc[0]
+
+        missing_count = df[col].isnull().sum()
+        missing_pct = round((missing_count / len(df)) * 100, 3)
+
+        summary_list.append({
+            "Variable": col,
+            "count": len(col_data),
+            "unique": unique_count,
+            "top": top_val,
+            "freq": freq_val,
+            "missing_count": missing_count,
+            "missing_pct": missing_pct,
+            "data_type": df[col].dtype
+        })
+        
+    summary = pd.DataFrame(summary_list).set_index("Variable")
+    
     return summary
 
 
@@ -82,122 +165,155 @@ def describe_categorical(df: pd.DataFrame) -> pd.DataFrame:
 # Distribution plots
 # ---------------------------------------------------------------------------
 
-def plot_distributions(
-    df: pd.DataFrame,
-    target_col: str,
-    shapiro: bool = True,
-) -> None:
-    """Plot histograms or bar charts for every column in *df*, coloured by
-    *target_col* class membership.
 
-    Numeric columns receive a KDE histogram with `hue=target_col`.
-    Categorical columns receive a count-plot with `hue=target_col`.
-    When *shapiro* is True, a Shapiro-Wilk normality test annotation is added
-    to each numeric plot (sample capped at 5 000 to keep the test valid).
-
-    Parameters
-    ----------
-    df:
-        DataFrame containing both feature columns and *target_col*.
-    target_col:
-        Column name used as the hue / grouping variable.
-    shapiro:
-        Whether to annotate numeric plots with the Shapiro-Wilk p-value.
+def visualize_feature_distributions(df, show=False, save_plt=True, output_path:str=c.OUTPUT_DIR):
     """
-    plot_cols = [c for c in df.columns if c != target_col]
-    n_plots = len(plot_cols)
-    n_cols = 3
-    n_rows = math.ceil(n_plots / n_cols)
+    Visualizes feature distributions for numerical, categorical, and datetime columns.
 
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(18, n_rows * 6))
-    axes = axes.flatten()
-    plt.subplots_adjust(hspace=0.7, wspace=0.4)
+    The function automatically detects column types and generates appropriate plots:
+    - Histograms for numerical variables.
+    - Bar charts for categorical variables.
+    - Line plots (monthly aggregated counts) for datetime variables.
 
-    for idx, column in enumerate(plot_cols):
+    The plots are arranged in a grid layout and can be optionally displayed
+    and/or saved to disk.
+
+    :param df: Input pandas DataFrame containing mixed feature types.
+    :param show: Whether to display the generated plots.
+    :param save_plt: Whether to save the generated figure as an image file.
+    :param output_path: Directory where the plot image will be saved.
+    :type df: pandas.DataFrame
+    :type show: bool
+    :type save_plt: bool
+    :type output_path: str
+    :return: None
+    :rtype: None
+"""
+    summary_num_table = describe_numerical(df)
+    summary_cat_table = describe_categorical(df)
+    cols_to_plot = df.select_dtypes(exclude=["string"]).columns
+    print(cols_to_plot)
+    total_cols = len(cols_to_plot)
+
+    num_rows = int(np.ceil(total_cols / 3))
+    # Create a grid of graphs
+    fig, axes = plt.subplots(num_rows, 3, figsize=(18, num_rows * 6))
+    axes = axes.flatten()  # Converting the 2D array to a list
+    plt.subplots_adjust(hspace=0.6, wspace=1.0)  # Spacing between graphs
+
+    for idx, column in enumerate(cols_to_plot):
         ax = axes[idx]
-        miss_pct = round(df[column].isnull().mean() * 100, 3)
-
         if pd.api.types.is_numeric_dtype(df[column]):
-            plot_data = df[[column, target_col]].dropna(subset=[column])
+          # If the variable is continuous, print a histogram
+            sns.histplot(data=df[column].dropna(), ax=ax, bins=20, color='skyblue')
 
-            sns.histplot(
-                data=plot_data,
-                x=column,
-                hue=target_col,
-                ax=ax,
-                bins=20,
-                kde=True,
-                fill=True,
-                alpha=0.5,
-            )
-
-            if shapiro:
-                sample = plot_data[column]
-                if len(sample) > 5000:
-                    sample = sample.sample(n=5000, random_state=42)
-                _, p_val = stats.shapiro(sample)
-
-                if p_val < 0.05:
-                    ax.annotate(
-                        f"Not normal\np={p_val:.1e}",
-                        xy=(0.98, 0.96),
-                        xycoords="axes fraction",
-                        ha="right", va="top",
-                        color="red", fontsize=9,
-                    )
-                else:
-                    ax.annotate(
-                        f"Normal\np={round(p_val, 4)}",
-                        xy=(0.98, 0.96),
-                        xycoords="axes fraction",
-                        ha="right", va="top",
-                        color="green", fontsize=9,
-                    )
-
-            ax.set_title(f"{idx + 1}) Histogram of {column}", fontsize=11)
-            ax.set_xlabel(f"{column}   [miss: {miss_pct}%]")
+            ax.set_title(f"{idx+1}) Histogram of {column}")
+            ax.set_xlabel(column + f"     miss: {summary_num_table.loc[column, 'missing_pct']}")
             ax.set_ylabel("Frequency")
+        
+        elif pd.api.types.is_datetime64_any_dtype(df[column]):
+            monthly_counts = df[column].dropna().dt.to_period('M').value_counts().sort_index()
+            
+            monthly_counts.plot(kind='line', ax=ax, color='mediumpurple', marker='o', linewidth=2)
+            
+            ax.set_title(f"{idx+1}) Trend over Time: {column}")
+            
+            ax.set_xlabel(column + f"     miss: {summary_cat_table.loc[column, 'missing_pct']}%")
+            ax.set_ylabel("Count per Month")
+        
 
         else:
-            sns.countplot(
-                data=df,
-                x=column,
-                hue=target_col,
-                ax=ax,
-            )
-            ax.set_title(f"{idx + 1}) Bar Chart of {column}", fontsize=11)
-            ax.set_xlabel(f"{column}   [miss: {miss_pct}%]")
+            # If the variable is categorical, print a bar graph
+            df[column].value_counts().plot(kind='bar', ax=ax, color='orange', edgecolor='black')
+            ax.set_title(f"{idx+1})Bar Chart of {column}")
+            ax.set_xlabel(str(column)  + f"     miss: {summary_cat_table.loc[column, 'missing_pct']}")
             ax.set_ylabel("Count")
-            ax.tick_params(axis="x", rotation=45)
 
-        ax.grid(axis="y", linestyle="--", alpha=0.6)
+        ax.grid(axis='y', linestyle='--', alpha=0.7)
+        
+    for blank_idx in range(total_cols, len(axes)):
+            fig.delaxes(axes[blank_idx])
 
-    # Hide unused axes
-    for j in range(n_plots, len(axes)):
-        axes[j].set_visible(False)
+    if save_plt:
+        plt.savefig(output_path + "/plot_hist_or_bar.png", bbox_inches='tight', dpi=300)
 
-    plt.suptitle("Variable Distributions by Target Class", fontsize=14, y=1.01)
-    plt.tight_layout()
-    plt.show()
+    if show:
+        plt.show()
 
+
+# ---------------------------------------------------------------------------
+# Schema Enforcement Layer
+# ---------------------------------------------------------------------------
+
+
+# add docstring --------
+def apply_data_schema(df: pd.DataFrame, schema_dict: dict) -> pd.DataFrame:
+    """
+    Applies a predefined data schema to a pandas DataFrame by casting column types.
+
+    The function iterates over a schema dictionary and converts each column
+    to the specified data type. It supports multiple semantic data types,
+    including continuous, binary, categorical, datetime, and identifier fields.
+
+    Supported schema types:
+    - continuous: Converts to numeric (float/int), invalid parsing becomes NaN.
+    - binary: Converts to numeric and then categorical type.
+    - nominal: Converts to categorical type.
+    - datetime: Converts to pandas datetime with day-first parsing.
+    - identifier: Converts to string type.
+
+    Behavior:
+    - Columns not present in the DataFrame are skipped.
+    - Unknown types generate a warning message.
+    - Conversion errors are caught and printed without stopping execution.
+
+    :param df: Input pandas DataFrame to be transformed.
+    :param schema_dict: Dictionary mapping column names to type configurations.
+    :type df: pandas.DataFrame
+    :type schema_dict: dict
+    :return: DataFrame with applied type conversions.
+    :rtype: pandas.DataFrame
+    """
+    df_clean = df.copy()
+    
+    for col, config in schema_dict.items():
+        if col not in df_clean.columns:
+            continue
+            
+        col_type = config.get("type")
+        
+        try:
+            if col_type == "continuous":
+                df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
+                
+            elif col_type == "binary":
+                df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce').astype('category')
+                
+            elif col_type == "nominal":
+                df_clean[col] = df_clean[col].astype('category')
+                
+            elif col_type == "datetime":
+                df_clean[col] = pd.to_datetime(df_clean[col], dayfirst=True, errors='coerce')
+                
+            elif col_type == "identifier":
+                df_clean[col] = df_clean[col].astype('string')
+                
+            else:
+                print(f"Warning: Unknown type '{col_type}' for column '{col}'.\tSkipping.")
+                
+        except Exception as e:
+            print(f"Error casting column '{col}' to '{col_type}': {e}")
+            
+    return df_clean
 
 # ---------------------------------------------------------------------------
 # Correlation analysis
 # ---------------------------------------------------------------------------
 
+# I STOPED HERE
+# add docstring --------
 def _spearman_heatmaps(df: pd.DataFrame, vars_: list[str]) -> None:
-    """Compute and plot Spearman correlation and p-value heatmaps.
 
-    Intended for numeric and ordinal variables.  Handles pairwise complete
-    observations (drops rows missing in either variable of each pair).
-
-    Parameters
-    ----------
-    df:
-        Source DataFrame.
-    vars_:
-        Column names to include in the analysis.
-    """
     corr_matrix = pd.DataFrame(index=vars_, columns=vars_, dtype=float)
     pval_matrix = pd.DataFrame(index=vars_, columns=vars_, dtype=float)
 
@@ -442,3 +558,115 @@ def analyze_missingness(df: pd.DataFrame) -> pd.DataFrame:
     print(sig_df[["n_associated", "is_MCAR"]].to_string())
 
     return sig_df
+
+
+# ---------------------------------------------------------------------------
+# Quick missing-value overview
+# ---------------------------------------------------------------------------
+
+def plot_simple_missing_heatmap(df: pd.DataFrame) -> None:
+    """Render a high-level heatmap of missing values across the full dataset.
+
+    Each cell is coloured by whether the value is missing (bright) or present
+    (dark), giving an instant visual impression of missingness patterns without
+    any statistical testing.  Use this as a first-pass sanity check before
+    calling :func:`analyze_missingness`.
+
+    Parameters
+    ----------
+    df:
+        DataFrame to inspect.  All column types are supported.
+    """
+    n_missing = df.isnull().sum().sum()
+    pct_missing = round(100 * n_missing / df.size, 2)
+
+    plt.figure(figsize=(max(12, len(df.columns) // 2), 6))
+    sns.heatmap(df.isnull(), cbar=False, cmap="viridis", yticklabels=False)
+    plt.title(
+        f"Missing-value map  |  {n_missing:,} missing cells ({pct_missing}% of total)",
+        fontsize=13,
+    )
+    plt.xticks(rotation=45, ha="right", fontsize=9)
+    plt.tight_layout()
+    plt.show()
+
+
+# ---------------------------------------------------------------------------
+# Rare-category detection
+# ---------------------------------------------------------------------------
+
+def detect_rare_categories(
+    df: pd.DataFrame,
+    cat_vars: list[str],
+    threshold: float = 0.05,
+) -> dict[str, list[str]]:
+    """Identify category levels whose relative frequency falls below *threshold*.
+
+    Rare categories can inflate model complexity and introduce instability,
+    especially in small clinical cohorts.  This function prints a structured
+    report and returns the findings for downstream consolidation decisions.
+
+    Frequencies are computed on non-missing values only so that missingness
+    does not artificially suppress category counts.
+
+    Parameters
+    ----------
+    df:
+        Source DataFrame.
+    cat_vars:
+        Names of categorical columns to scan.
+    threshold:
+        Minimum acceptable relative frequency (default 0.05 = 5 %).
+        Categories below this threshold are flagged.
+
+    Returns
+    -------
+    dict[str, list[str]]
+        Mapping of column name → list of rare category labels.
+        Columns with no rare categories are omitted from the dict.
+    """
+    rare: dict[str, list[str]] = {}
+
+    print(f"Rare-category scan  (threshold < {threshold * 100:.1f}%)\n{'─' * 55}")
+
+    for col in cat_vars:
+        if col not in df.columns:
+            print(f"  [WARN] '{col}' not found in DataFrame — skipped.")
+            continue
+
+        non_null = df[col].dropna()
+        if non_null.empty:
+            continue
+
+        freq = non_null.value_counts(normalize=True)
+        rare_levels = freq[freq < threshold]
+
+        if rare_levels.empty:
+            continue
+
+        rare[col] = [str(lv) for lv in rare_levels.index]
+
+        print(f"\n  {col}  ({len(rare_levels)} rare / {freq.shape[0]} total categories)")
+        for level, rel_freq in rare_levels.items():
+            abs_count = non_null.value_counts()[level]
+            print(
+                f"    • {str(level):<20}  {rel_freq * 100:5.2f}%  "
+                f"(n={abs_count})  → consider consolidating"
+            )
+
+    if not rare:
+        print("  No rare categories detected at the current threshold.")
+    else:
+        print(f"\n{'─' * 55}")
+        print(
+            f"  {len(rare)} column(s) contain rare categories.  "
+            "Review the report above before modelling."
+        )
+
+    return rare
+
+
+def main():
+    import config
+    df = pd.read_csv
+    plot_distributions()

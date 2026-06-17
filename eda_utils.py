@@ -443,12 +443,14 @@ def apply_data_schema(df: pd.DataFrame, schema_dict: dict) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def split_variables_by_type(df: pd.DataFrame, normal_vars: List[str]) -> Tuple[List[str], List[str], List[str], List[str]]:
+def split_variables_by_type(df: pd.DataFrame, normal_vars: List[str] = []) -> Tuple[List[str], List[str], List[str], List[str], List[str], List[str]]:
     """
     Splits DataFrame variables into groups based on data type and normality assumption.
 
     The function categorizes columns into:
     - Categorical variables (category dtype)
+    - Binary categorical variables (exactly 2 categories)
+    - Multi-class categorical variables (more than 2 categories)
     - Continuous variables assumed to be normally distributed
     - Continuous variables not assumed to be normally distributed
     - Datetime variables
@@ -457,23 +459,28 @@ def split_variables_by_type(df: pd.DataFrame, normal_vars: List[str]) -> Tuple[L
     of normally distributed variables.
 
     :param df: Input pandas DataFrame.
-    :param normal_vars: List of column names assumed to follow a normal distribution.
+    :param normal_vars: List of column names assumed to follow a normal distribution (diff []).
     :type df: pandas.DataFrame
     :type normal_vars: List[str]
     :return: Tuple containing:
             (categorical variables,
+            binary categorical variables,
+            multi-class categorical variables,
             non-normal continuous variables,
             normal continuous variables,
             datetime variables)
-    :rtype: Tuple[List[str], List[str], List[str], List[str]]
+    :rtype: Tuple[List[str], List[str], List[str], List[str], List[str], List[str]]
     """
     cat_vars = df.select_dtypes(include=['category']).columns.tolist()
+    bin_cat = [col for col in cat_vars if df[col].dropna().nunique() == 2]
+    multy_cat = [col for col in cat_vars if df[col].dropna().nunique() > 2]
+    
     all_cont_vars = df.select_dtypes(include=[np.number]).columns.tolist()
     non_normal_cont_vars = [col for col in all_cont_vars if col not in normal_vars]
     normal_cont_vars = [col for col in all_cont_vars if col in normal_vars]
     datetime_vars = df.select_dtypes(include=['datetime']).columns.tolist()
     
-    return cat_vars, non_normal_cont_vars, normal_cont_vars, datetime_vars
+    return cat_vars, bin_cat, multy_cat, non_normal_cont_vars, normal_cont_vars, datetime_vars
 
 
 # ---------------------------------------------------------------------------
@@ -1313,205 +1320,325 @@ def apply_clinical_logic(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
 # Missingness analysis  (MCAR vs MAR)
 # ---------------------------------------------------------------------------
 
-def analyze_missingness(df: pd.DataFrame) -> pd.DataFrame:
-    """Formally test whether missing data in each variable are MCAR or MAR.
-
-    For each variable with at least one missing value the function tests its
-    missing-value indicator against every other column:
-
-    - **Numeric other column** → Kolmogorov-Smirnov test comparing the full
-      distribution to the subset observed when the focal column is present.
-    - **Categorical other column** → Chi-Square test between the binary
-      missing indicator and the categorical column.
-
-    A p-value ≤ 0.05 is treated as evidence that the other column is
-    *associated* with the missingness of the focal variable (MAR signal).
-
-    No imputation is performed; the function is diagnostic only.
-
-    Parameters
-    ----------
-    df:
-        DataFrame to inspect.  All column types are supported.
-
-    Returns
-    -------
-    pd.DataFrame
-        Boolean matrix (rows = variables with missing data, columns = all
-        other variables).  True means the association test was significant
-        (p ≤ 0.05).  Two extra columns are appended:
-
-        - ``n_associated``: count of columns significantly associated with
-          the missingness of the focal variable.
-        - ``is_MCAR``: True when no association is detected (n_associated == 0).
+def missingness_mechanism_table(df: pd.DataFrame, normal_vars: List[str], non_normal_vars: List[str],
+    multy_cat_vars: List[str], bin_cat_vars: List[str], alpha: float = 0.05,min_obs: int = 3,
+    optional_labels:list=["num of affecting columns", "associated_variables", "MAR"]) -> pd.DataFrame:
     """
-    missing_cols = [c for c in df.columns if df[c].isnull().any()]
+    Analyzes missing data mechanisms and generates a detailed missingness report.
 
-    if not missing_cols:
-        print("No missing values detected — nothing to analyse.")
-        return pd.DataFrame()
+    The function evaluates whether missing values in each variable are associated
+    with other observed variables using appropriate statistical tests. It extends
+    the basic missingness analysis by also recording which variables significantly
+    affect the missingness pattern.
 
-    p_values: dict[str, dict[str, float]] = {}
+    The function attempts to classify missingness as:
+    - MAR (Missing At Random):
+    Missingness is associated with at least one observed variable.
+    - MCAR (Missing Completely At Random):
+    No significant association with tested variables was detected.
 
-    for focal in missing_cols:
-        p_values[focal] = {}
-        for other in df.columns:
-            if other == focal:
+    For every variable containing missing values:
+    - Creates a binary missingness indicator:
+        1 = missing value
+        0 = observed value
+    - Compares the indicator against all other variables using the suitable test.
+    - Stores significant associations and their p-values.
+
+    Output columns can be customized using optional_labels.
+
+    :param df: Input pandas DataFrame.
+    :param normal_vars: List of normally distributed continuous variables.
+    :param non_normal_vars: List of non-normal continuous variables.
+    :param multy_cat_vars: List of categorical variables with more than two groups.
+    :param bin_cat_vars: List of binary categorical variables.
+    :param alpha: Significance threshold for determining association.
+    :param min_obs: Minimum number of observations required for a statistical test.
+    :param optional_labels: List of requested output columns.
+    :type df: pandas.DataFrame
+    :type normal_vars: list[str]
+    :type non_normal_vars: list[str]
+    :type multy_cat_vars: list[str]
+    :type bin_cat_vars: list[str]
+    :type alpha: float
+    :type min_obs: int
+    :type optional_labels: list[str]
+
+    :return:
+        DataFrame containing missingness mechanism information:
+        - Variable name.
+        - Number of associated variables.
+        - Variables affecting missingness with p-values.
+        - MCAR classification.
+        - MAR classification.
+    :rtype: pandas.DataFrame
+    """
+    type_map = {
+        **{v: "normal" for v in normal_vars},
+        **{v: "non_normal" for v in non_normal_vars},
+        **{v: "categorical" for v in multy_cat_vars},
+        **{v: "dichotomous" for v in bin_cat_vars},
+    }
+    
+    variables = list(type_map.keys())
+    counts = {}
+    p_vals: Dict[Tuple[str, str], float] = {}
+
+
+    for var in variables:
+        # Skip if the column has no missing values
+        if not df[var].isnull().any():
+            continue
+            
+        # Create dichotomous indicator for missingness (1 = missing, 0 = not missing)
+        indicator = df[var].isnull().astype(int)
+
+        n_associated = 0
+        for other in variables:
+            if other == var:
                 continue
+                
+            pair = pd.concat([indicator, df[other]], axis=1).dropna()
+            if len(pair) < min_obs:
+                continue
+                
+            p = _pair_test(pair.iloc[:, 0], pair.iloc[:, 1], "dichotomous", type_map[other])
+            
+            if pd.notna(p) and p <= alpha:
+                n_associated += 1
+                p_vals[(var, other)] = p
 
-            if pd.api.types.is_numeric_dtype(df[other]):
-                full_series = df[other].dropna()
-                observed_series = df.loc[df[focal].notnull(), other].dropna()
-                if len(observed_series) < 2 or len(full_series) < 2:
-                    p_values[focal][other] = np.nan
-                    continue
-                _, p = stats.ks_2samp(full_series, observed_series)
-            else:
-                missing_indicator = df[focal].isnull().astype(int)
-                ct = pd.crosstab(missing_indicator, df[other].dropna())
-                if ct.shape[0] < 2 or ct.shape[1] < 2:
-                    p_values[focal][other] = np.nan
-                    continue
-                _, p, _, _ = stats.chi2_contingency(ct)
+        counts[var] = n_associated
 
-            p_values[focal][other] = p
+    # Build the final DataFrame
+    table = pd.DataFrame({"num of affecting columns": pd.Series(counts, dtype=int)})
+    table["MAR"] = table["num of affecting columns"] > 0
+    table["MCAR"] = ~table["MAR"]
+    table = table.reset_index().rename(columns={"index": "Variable"})
+   
 
-    pval_df = pd.DataFrame(p_values).T          # rows = focal vars
-    sig_df = pval_df <= 0.05                     # True where association is significant
+    assoc_texts:Dict[str:List[str]] = {}
+    for (var, other), p in p_vals.items():
+        text = f"{other} (p={p:.4f})"
+        if var not in assoc_texts:
+            assoc_texts[var] = []
+        assoc_texts[var].append(text)
 
-    # ── Heatmap of significance flags ──────────────────────────────────────
-    plt.figure(figsize=(max(12, pval_df.shape[1] // 2), max(6, len(missing_cols))))
-    sns.heatmap(
-        sig_df.astype(float),
-        annot=True, fmt=".0f",
-        cmap="PiYG", cbar=True,
-        annot_kws={"size": 8},
-        vmin=0, vmax=1,
-    )
-    plt.title(
-        "Missingness association heatmap\n"
-        "1 = significant (p ≤ 0.05)  |  0 = not significant\n"
-        "(rows: variables with missing data; columns: potential predictors of missingness)",
-        fontsize=12,
-    )
-    plt.xticks(rotation=45, ha="right", fontsize=8)
-    plt.yticks(fontsize=9)
-    plt.tight_layout()
-    plt.show()
+    assoc_strings = {var: ", ".join(items) for var, items in assoc_texts.items()}
 
-    # ── Summary columns ────────────────────────────────────────────────────
-    sig_df["n_associated"] = sig_df.sum(axis=1)
-    sig_df["is_MCAR"] = sig_df["n_associated"] == 0
+    table["associated_variables"] = table["Variable"].map(assoc_strings).fillna("")
 
-    print("\nMissingness mechanism summary:")
-    print(sig_df[["n_associated", "is_MCAR"]].to_string())
+    master_order = ["Variable", "num of affecting columns", "associated_variables", "MCAR", "MAR"]   
 
-    return sig_df
+    user_requests = set(optional_labels) if optional_labels else set()
+    user_requests.update(["Variable", "MCAR"])
+    final_cols = [col for col in master_order if col in user_requests and col in table.columns]
+
+    return table[final_cols]
+
+
+def _pair_test(a: pd.Series, b: pd.Series, type_a: str, type_b: str) -> float:
+    """
+    Performs the appropriate statistical test between two variables based on their
+    data types and returns the resulting p-value.
+
+    The function automatically selects the statistical test according to the
+    variable types:
+
+    - Continuous vs Continuous:
+        - Pearson correlation for two normally distributed variables.
+        - Spearman correlation when at least one variable is non-normal.
+
+    - Continuous vs Dichotomous:
+        - Independent t-test for normal continuous variables.
+        - Mann-Whitney U test for non-normal continuous variables.
+
+    - Continuous vs Categorical (>2 groups):
+        - One-way ANOVA for normal continuous variables.
+        - Kruskal-Wallis test for non-normal continuous variables.
+
+    - Categorical vs Categorical:
+        - Chi-square test of independence.
+
+    The function is mainly used for missingness mechanism analysis, where one
+    variable is often a binary missingness indicator.
+
+    :param a: First variable series.
+    :param b: Second variable series.
+    :param type_a: Data type classification of the first variable.
+    :param type_b: Data type classification of the second variable.
+    :type a: pandas.Series
+    :type b: pandas.Series
+    :type type_a: str
+    :type type_b: str
+
+    :return:
+        P-value obtained from the selected statistical test.
+    :rtype: float
+    """
+    types = {type_a, type_b}
+    continuous = {"normal", "non_normal"}
+
+    # continuous vs continuous  ->  Pearson (both normal) / Spearman
+    if type_a in continuous and type_b in continuous:
+        if type_a == "normal" and type_b == "normal":
+            return stats.pearsonr(a, b)[1]
+        return stats.spearmanr(a, b)[1]
+
+    # continuous vs dichotomous  ->  t-test (normal) / Mann-Whitney
+    if types & continuous and "dichotomous" in types:
+        (cont, cont_type, grp) = (a, type_a, b) if type_a in continuous else (b, type_b, a)
+        groups = [cont[grp == g] for g in pd.unique(grp)]
+        if cont_type == "normal":
+            return stats.ttest_ind(*groups, equal_var=True)[1]
+        return stats.mannwhitneyu(*groups, alternative="two-sided")[1]
+
+    # continuous vs categorical  ->  ANOVA (normal) / Kruskal-Wallis (H-test)
+    if types & continuous and "categorical" in types:
+        (cont, cont_type, grp) = (a, type_a, b) if type_a in continuous else (b, type_b, a)
+        groups = [cont[grp == g] for g in pd.unique(grp)]
+        if cont_type == "normal":
+            return stats.f_oneway(*groups)[1]
+        return stats.kruskal(*groups)[1]
+
+    # (di)categorical vs (di)categorical  ->  Chi-Square
+    return stats.chi2_contingency(pd.crosstab(a, b))[1]
 
 
 # ---------------------------------------------------------------------------
 # Quick missing-value overview
 # ---------------------------------------------------------------------------
 
-def plot_simple_missing_heatmap(df: pd.DataFrame) -> None:
-    """Render a high-level heatmap of missing values across the full dataset.
-
-    Each cell is coloured by whether the value is missing (bright) or present
-    (dark), giving an instant visual impression of missingness patterns without
-    any statistical testing.  Use this as a first-pass sanity check before
-    calling :func:`analyze_missingness`.
-
-    Parameters
-    ----------
-    df:
-        DataFrame to inspect.  All column types are supported.
+def plot_simple_missing_heatmap(df: pd.DataFrame, rand:bool = False, save_plt:bool = True, show:bool = False, output_path:str=c.OUTPUT_DIR, end:str = "")-> None:
     """
-    n_missing = df.isnull().sum().sum()
-    pct_missing = round(100 * n_missing / df.size, 2)
+    Plots a heatmap visualization of missing values in a DataFrame.
 
-    plt.figure(figsize=(max(12, len(df.columns) // 2), 6))
-    sns.heatmap(df.isnull(), cbar=False, cmap="viridis", yticklabels=False)
+    The function generates a binary heatmap where:
+    - Missing values (NaN) are highlighted.
+    - Observed values are shown as empty/neutral cells.
+
+    This visualization helps quickly identify:
+    - Missing data patterns
+    - Structural missingness across rows/columns
+    - Random vs clustered missing behavior
+
+    Behavior:
+    - Optionally samples the dataset for large DataFrames to improve performance.
+    - Displays summary statistics in the plot title:
+        - Total missing cells
+        - Percentage of missing data
+    - Supports saving the plot to disk with optional labeling.
+
+    :param df: Input pandas DataFrame.
+    :param rand: If True, randomly samples up to 10,000 rows for visualization when dataset is large.
+    :param save_plt: Whether to save the generated plot as an image file.
+    :param show: Whether to display the plot interactively.
+    :param output_path: Directory where the plot image will be saved.
+    :param end: Optional suffix added to filename and plot title (e.g., version or timestamp tag).
+    :type df: pandas.DataFrame
+    :type rand: bool
+    :type save_plt: bool
+    :type show: bool
+    :type output_path: str
+    :type end: str
+
+    :return: None
+    """
+    plot_df = df.copy()
+    n_missing = plot_df.isnull().sum().sum()
+    pct_missing = round(100 * n_missing / df.size, 2)
+    rand_msg = ""
+    max_visual_rows = 10000 
+
+    if rand and len(df) > max_visual_rows:
+        plot_df = plot_df.sample(n=max_visual_rows, random_state=42).sort_index()
+        rand_msg = f" | Sampled {max_visual_rows:,} rows"
+    
+
+    plt.figure(figsize=(max(12, len(plot_df.columns) // 2), 6))
+    sns.heatmap(plot_df.isnull(), cbar=False, cmap="crest", yticklabels=False)
     plt.title(
-        f"Missing-value map  |  {n_missing:,} missing cells ({pct_missing}% of total)",
-        fontsize=13,
-    )
+        f"Missing-value map  |  {n_missing:,} missing cells ({pct_missing}% of total {end}{rand_msg})", fontsize=13, pad=15)
+    
     plt.xticks(rotation=45, ha="right", fontsize=9)
     plt.tight_layout()
-    plt.show()
+
+    if save_plt:
+        plt.savefig(output_path + f"/missing_heatmap{end}{rand_msg}.png", bbox_inches='tight', dpi=300)
+
+    if show:
+        plt.show()
+    else:
+        plt.close()
+
 
 
 # ---------------------------------------------------------------------------
 # Rare-category detection
 # ---------------------------------------------------------------------------
 
-def detect_rare_categories(
-    df: pd.DataFrame,
-    cat_vars: list[str],
-    threshold: float = 0.05,
-) -> dict[str, list[str]]:
-    """Identify category levels whose relative frequency falls below *threshold*.
-
-    Rare categories can inflate model complexity and introduce instability,
-    especially in small clinical cohorts.  This function prints a structured
-    report and returns the findings for downstream consolidation decisions.
-
-    Frequencies are computed on non-missing values only so that missingness
-    does not artificially suppress category counts.
-
-    Parameters
-    ----------
-    df:
-        Source DataFrame.
-    cat_vars:
-        Names of categorical columns to scan.
-    threshold:
-        Minimum acceptable relative frequency (default 0.05 = 5 %).
-        Categories below this threshold are flagged.
-
-    Returns
-    -------
-    dict[str, list[str]]
-        Mapping of column name → list of rare category labels.
-        Columns with no rare categories are omitted from the dict.
+def categorical_frequencies_table(df: pd.DataFrame, cat_vars: List[str], threshold: float = 0.05) -> pd.DataFrame:
     """
-    rare: dict[str, list[str]] = {}
+    Creates a frequency distribution table for categorical variables.
 
-    print(f"Rare-category scan  (threshold < {threshold * 100:.1f}%)\n{'─' * 55}")
+    The function computes absolute counts and relative percentages for each category
+    within the specified categorical variables. Missing values are treated as a
+    separate explicit category ("Missing") to ensure full representation of the data
+    distribution.
+
+    For each variable:
+    - Counts are computed using value_counts(dropna=False).
+    - Percentages are computed relative to the full column size.
+    - Categories below a given frequency threshold are flagged as rare.
+
+    Behavior:
+    - Missing values are included as a distinct category labeled "Missing".
+    - Rare categories are identified when their percentage is below the threshold.
+    - Output is a long-format table (one row per category per variable).
+
+    :param df: Input pandas DataFrame.
+    :param cat_vars: List of categorical variable names to analyze.
+    :param threshold: Proportion threshold for defining rare categories (e.g., 0.05 = 5%).
+    :type df: pandas.DataFrame
+    :type cat_vars: List[str]
+    :type threshold: float
+
+    :return:
+        DataFrame containing:
+        - Variable name
+        - Category value
+        - Count of occurrences
+        - Percentage of total
+        - Rare category flag
+    :rtype: pandas.DataFrame
+    """
+    rows = []
 
     for col in cat_vars:
         if col not in df.columns:
-            print(f"  [WARN] '{col}' not found in DataFrame — skipped.")
             continue
 
-        non_null = df[col].dropna()
-        if non_null.empty:
-            continue
+        # Using dropna=False ensures missing values are counted as a distinct category
+        counts = df[col].value_counts(dropna=False)
+        percentages = df[col].value_counts(dropna=False, normalize=True) * 100
 
-        freq = non_null.value_counts(normalize=True)
-        rare_levels = freq[freq < threshold]
+        for cat_val, count in counts.items():
+            pct = percentages[cat_val]
+            
+            # Identify if the category is the missing values group
+            is_missing = pd.isna(cat_val)
+            cat_name = "Missing" if is_missing else str(cat_val)
+            
+            # Flag as rare if it's below the threshold (usually we don't flag 'Missing' as rare to consolidate)
+            is_rare = bool(pct < (threshold * 100))
+            
+            rows.append({
+                "Variable": col,
+                "Category": cat_name,
+                "Count": int(count),
+                "Percentage (%)": round(pct, 2),
+                "Is_Rare": is_rare
+            })
 
-        if rare_levels.empty:
-            continue
-
-        rare[col] = [str(lv) for lv in rare_levels.index]
-
-        print(f"\n  {col}  ({len(rare_levels)} rare / {freq.shape[0]} total categories)")
-        for level, rel_freq in rare_levels.items():
-            abs_count = non_null.value_counts()[level]
-            print(
-                f"    • {str(level):<20}  {rel_freq * 100:5.2f}%  "
-                f"(n={abs_count})  → consider consolidating"
-            )
-
-    if not rare:
-        print("  No rare categories detected at the current threshold.")
-    else:
-        print(f"\n{'─' * 55}")
-        print(
-            f"  {len(rare)} column(s) contain rare categories.  "
-            "Review the report above before modelling."
-        )
-
-    return rare
-
-
+    report_df = pd.DataFrame(rows)
+    
+    return report_df

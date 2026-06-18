@@ -1,6 +1,8 @@
 import subprocess
 import sys
 import os
+import importlib.util
+
 
 # ---------------------------------------------------------------------------
 # Installations
@@ -25,10 +27,8 @@ def install_requirements(file_path: str) -> bool:
     :rtype: bool
     """
     try:
-        
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", file_path])
         return True
-        
     except subprocess.CalledProcessError as e:
         print(f"An error occurred during installation: {e}")
         return False
@@ -44,7 +44,19 @@ def create_project_dirs():
         print(f"Directory '{folder}' is ready.")    
 
 
+def run_setup():
+    create_project_dirs()
+    print("installiation res: ", install_requirements("requirements.txt") )
 
 
-create_project_dirs()
-print("installiation res: ", install_requirements("requirements.txt") )
+def check_installed_packages():
+    packages = ['scipy', 'sweetviz', 'matplotlib', 'seaborn', 'sklearn',
+                'statsmodels', 'pmsampsize', 'dcurves']
+    all_installed = True
+    for pkg in packages:
+        if importlib.util.find_spec(pkg) is not None:
+            print(f"[INSTALLED] {pkg}")
+        else:
+            print(f"[MISSING]   {pkg}")
+            all_installed = False
+    return all_installed

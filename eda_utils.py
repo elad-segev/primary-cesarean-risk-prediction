@@ -1,4 +1,3 @@
-import math
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -183,7 +182,6 @@ def visualize_feature_distributions(df: pd.DataFrame, show:bool=False, save_plt:
     summary_num_table = describe_numerical(df)
     summary_cat_table = describe_categorical(df)
     cols_to_plot = df.select_dtypes(exclude=["string"]).columns
-    print(cols_to_plot)
     total_cols = len(cols_to_plot)
 
     num_rows = int(np.ceil(total_cols / 3))
@@ -1314,6 +1312,85 @@ def apply_clinical_logic(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     
     return df_clean, report_df
 
+
+# ---------------------------------------------------------------------------
+# Quick outliers-value overview
+# ---------------------------------------------------------------------------
+
+
+def plot_outliers_heatmap(df: pd.DataFrame, outliers_matrix: pd.DataFrame, rand: bool = False, save_plt: bool = True, show: bool = False, output_path: str = c.OUTPUT_DIR, end: str = "") -> None:
+    """
+    Creates and optionally saves a heatmap visualization of detected outliers and
+    rare categorical values.
+
+    The function visualizes a boolean matrix where:
+    - Rows represent observations.
+    - Columns represent variables.
+    - True values indicate detected outliers or rare categories.
+
+    The heatmap provides an overview of data quality issues by showing the
+    distribution of flagged values across the dataset.
+
+    The function calculates:
+    - Total number of flagged cells.
+    - Percentage of flagged cells relative to the entire matrix.
+
+    For large datasets, optional random sampling can be applied to limit the number
+    of displayed rows while maintaining visualization readability.
+
+    :param df: Original DataFrame (used for compatibility and future extensions).
+    :param outliers_matrix: Boolean DataFrame indicating outliers or rare categories.
+    :param rand: Whether to randomly sample rows before visualization.
+    :param save_plt: Whether to save the generated heatmap image.
+    :param show: Whether to display the plot.
+    :param output_path: Directory path where the image will be saved.
+    :param end: Optional suffix added to the output filename.
+    :type df: pandas.DataFrame
+    :type outliers_matrix: pandas.DataFrame
+    :type rand: bool
+    :type save_plt: bool
+    :type show: bool
+    :type output_path: str | Path
+    :type end: str
+
+    :return: None
+    :rtype: None
+    """
+    plot_matrix = outliers_matrix.copy()
+    
+    n_outliers = plot_matrix.sum().sum()
+    pct_outliers = round(100 * n_outliers / plot_matrix.size, 2)
+    
+    rand_msg = ""
+    rand_file_suffix = ""
+    max_visual_rows = 10000 
+
+    if rand and len(plot_matrix) > max_visual_rows:
+        plot_matrix = plot_matrix.sample(n=max_visual_rows, random_state=42).sort_index()
+        rand_msg = f" | Sampled {max_visual_rows:,} rows"
+        rand_file_suffix = "_sampled" # Safer for filenames than using rand_msg
+
+    # Dynamically adjust width based on number of columns
+    plt.figure(figsize=(max(12, len(plot_matrix.columns) // 2), 6))
+    
+    # cmap="Reds" creates a good visual cue for outliers (warnings)
+    sns.heatmap(plot_matrix, cbar=False, cmap="Reds", yticklabels=False)
+    
+    plt.title(
+        f"Outliers & Rare Categories Map  |  {n_outliers:,} flagged cells ({pct_outliers}% of total {end}{rand_msg})", 
+        fontsize=13, pad=15
+    )
+    
+    plt.xticks(rotation=45, ha="right", fontsize=9)
+    plt.tight_layout()
+
+    if save_plt:
+        plt.savefig(output_path + f"/outliers_heatmap{end}{rand_file_suffix}.png", bbox_inches='tight', dpi=300)
+
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
 
 # ---------------------------------------------------------------------------

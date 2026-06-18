@@ -12,6 +12,18 @@ TARGET_VAR: str = "primary_cesarean"
 
 SENSITIVITY_FLAG: str = "was_planned_cs"
 
+
+# cat_vars = []
+# bin_cat = []
+# multy_cat = []
+# non_normal_cont_vars = []
+# normal_cont_vars  = []
+# datetime_vars = []
+
+
+
+
+
 gdm_schema = {
     # Identifiers and Dates
     "mother_medical_record": {"type": "identifier"},

@@ -4,4 +4,3 @@ sweetviz
 numpy
 matplotlib
 seaborn
-scikit-learn

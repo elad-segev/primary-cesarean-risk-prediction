@@ -3,7 +3,6 @@ import pandas as pd
 
 OUTPUT_DIR: str = "output"
 
-
 DATA_PATH: str = "data/df.csv"
 
 HOLY_DATA = pd.read_csv(DATA_PATH)
@@ -20,10 +19,6 @@ SENSITIVITY_FLAG: str = "was_planned_cs"
 # normal_cont_vars  = []
 # datetime_vars = []
 
-
-
-
-
 gdm_schema = {
     # Identifiers and Dates
     "mother_medical_record": {"type": "identifier"},
@@ -33,7 +28,6 @@ gdm_schema = {
     
     # Demographics and Anthropometry (Continuous)
     "mother_age": {"type": "continuous"},
-    "parity": {"type": "continuous"}, # we need to test it
     "height_cm": {"type": "continuous"},
     "weight_pre_pregnancy": {"type": "continuous"},
     "weight_at_admission": {"type": "continuous"},
@@ -43,9 +37,6 @@ gdm_schema = {
     # Laboratory (Continuous)
     "hemoglobin_first": {"type": "continuous"},
     "hemoglobin_min": {"type": "continuous"},
-    "glucose_lab_any": {"type": "continuous"},
-    "glucose_poc_any": {"type": "continuous"},
-    "glucose_any": {"type": "continuous"},
     "glucose_max": {"type": "continuous"},
     
     # Intrapartum (Continuous)
@@ -71,15 +62,18 @@ gdm_schema = {
     "polyhydramnios": {"type": "binary"},
     "oligohydramnios": {"type": "binary"},
     "prom": {"type": "binary"},
+    "glucose_poc_any": {"type": "binary"}, #need to confirm the glucose
+    "glucose_any": {"type": "binary"},
+    "glucose_lab_any": {"type": "binary"},
+    
     
     # Nominal / Categorical
     "start_mode_raw": {"type": "nominal"},
     "fetal_presentation": {"type": "nominal"},
     "membranes_color_raw": {"type": "nominal"},
-    "membranes_type_raw": {"type": "nominal"}
+    "membranes_type_raw": {"type": "nominal"},
+    "parity": {"type": "nominal"}
 }
-
-
 
 
 # Fill in before running EDA — do not leave empty in production pipelines.

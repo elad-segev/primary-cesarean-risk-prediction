@@ -3,7 +3,6 @@ import pandas as pd
 
 OUTPUT_DIR: str = "output"
 
-
 DATA_PATH: str = "data/df.csv"
 
 HOLY_DATA = pd.read_csv(DATA_PATH)
@@ -11,6 +10,14 @@ HOLY_DATA = pd.read_csv(DATA_PATH)
 TARGET_VAR: str = "primary_cesarean"
 
 SENSITIVITY_FLAG: str = "was_planned_cs"
+
+
+# cat_vars = []
+# bin_cat = []
+# multy_cat = []
+# non_normal_cont_vars = []
+# normal_cont_vars  = []
+# datetime_vars = []
 
 gdm_schema = {
     # Identifiers and Dates

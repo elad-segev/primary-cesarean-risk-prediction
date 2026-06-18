@@ -11,13 +11,20 @@ TARGET_VAR: str = "primary_cesarean"
 
 SENSITIVITY_FLAG: str = "was_planned_cs"
 
-
 # cat_vars = []
-# bin_cat = []
-# multy_cat = []
-# non_normal_cont_vars = []
-# normal_cont_vars  = []
-# datetime_vars = []
+
+# bin_cat = [primary_cesarean, was_planned_cs, anemia, hba1c_recorded, oxytocin_recorded, 
+#           insulin_recorded, metformin_recorded, antihypertensive_recorded, induction,meconium, ctg_performed, chronic_htn,
+#           gestational_htn, preeclampsia, any_htn, polyhydramnios, oligohydramnios, prom, glucose_poc_any, glucose_any,
+#           glucose_lab_any, fetal_presentation]
+
+# multy_cat = [parity,start_mode_raw,membranes_color_raw,membranes_type_raw]
+
+# non_normal_cont_vars = [mother_age,weight_pre_pregnancy,weight_at_admission,bmi_computed,weight_gain,hemoglobin_min,glucose_max,gestational_age_weeks]
+
+# normal_cont_vars  = [height_cm, hemoglobin_first, birth_weight_g]
+
+# datetime_vars = [birth_date, admission_date]
 
 gdm_schema = {
     # Identifiers and Dates

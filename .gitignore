@@ -1,0 +1,7 @@
+venv/ 
+data/
+__pycache__/ 
+first_submission_in_data_science_part_1.py
+output/
+EDA_copy.ipynb
+docs/קשרים בין משתנים.xlsx

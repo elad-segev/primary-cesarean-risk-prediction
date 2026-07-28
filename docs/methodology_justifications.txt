@@ -1,0 +1,92 @@
+CLINICAL LOGIC AND DATA INTEGRITY JUSTIFICATIONS
+--------------------------------------------------------------------
+
+This document outlines the clinical invariants, mathematical checks, 
+and data leakage prevention strategies applied during the data 
+preprocessing phase (via the `apply_clinical_logic` function).
+
+1. PAIRWISE CONTRADICTIONS (LOGICAL ERRORS)
+These checks identify variables that are mutually exclusive or highly
+implausible in a valid clinical reality. Depending on the rule, values
+are either nullified (set to NaN) to represent irresolvable data-entry 
+errors, or flagged for exploratory analysis without data destruction.
+
+  1.1. Weight Invariant (Pre-pregnancy vs. Admission and Gain)
+     Clinical logic dictates that a patient's weight at admission is generally 
+     expected to be greater than or equal to their pre-pregnancy weight. Although 
+     modest weight loss may occur due to clinical conditions such as hyperemesis 
+     gravidarum, a reduction exceeding 10 kg is considered clinically implausible 
+     and is treated as a data-quality anomaly. Because the recorded weight_gain 
+     variable does not fully overlap with its parent weight measurements, the 
+     clinical threshold is evaluated independently for both the calculated weight 
+     difference (admission minus pre-pregnancy) and the recorded weight_gain value. 
+     To preserve valid observations, only the component violating the clinical 
+     threshold is nullified. Parent weight variables are nullified when the 
+     calculated difference exceeds the threshold, whereas weight_gain is nullified 
+     only when its recorded value violates the same criterion.
+
+  1.2. Amniotic Fluid Invariant (Polyhydramnios vs. Oligohydramnios)
+       A patient cannot present with both excessive amniotic fluid 
+       (polyhydramnios) and insufficient amniotic fluid 
+       (oligohydramnios) during a singleton pregnancy at the same 
+       point in time. If both flags equal 1, they are set to NaN.
+
+  1.3. Hypertension Type Invariant
+       By clinical definition and ICD coding conventions, chronic 
+       hypertension (pre-existing) and gestational hypertension 
+       (pregnancy-induced) are mutually exclusive primary classifications. 
+       However, preeclampsia can superimposed on either condition. Therefore, 
+       co-occurrence of chronic and gestational HTN is treated as a 
+       contradiction and nullified, while combinations with preeclampsia 
+       are preserved as clinically valid.
+
+  1.4. Delivery Pathway Invariant (Planned CS vs. Induction)
+       While a planned Cesarean section does not typically involve labor 
+       induction, a co-occurrence often represents a "failed induction" 
+       where a patient underwent induction that later required an emergency 
+       or unplanned CS. To avoid losing this valuable clinical pattern, 
+       this rule is treated as a non-destructive audit check (Log Only) 
+       to evaluate the volume of failed inductions rather than automatically 
+       nullifying the data.
+
+  1.5. Temporal Invariant (Admission vs. Birth Date)
+       Chronologically, the admission date must precede or equal the 
+       birth date. This is an absolute clinical rule; violations are 
+       strictly nullified.
+
+2. DERIVED VARIABLES AND MATHEMATICAL INVARIANTS
+These checks ensure that derived features mathematically align with 
+their source components based on clinical formulas.
+
+  2.1. HTN Cluster Recalculation (The HTN Cluster)
+       The overarching variable 'any_htn' represents the union (OR logic) 
+       of its components. To ensure structural truth and protect against 
+       source registry mismatches, 'any_htn' is strictly recalculated 
+       as the maximum value of 'chronic_htn', 'gestational_htn', and 
+       'preeclampsia'.
+
+  2.2. BMI Mathematical Verification
+       Rather than verifying and correcting minor rounding errors in the 
+       original registry's BMI field, a transparent, standalone feature 
+       called 'bmi_pre_pregnancy' is calculated for the entire cohort 
+       using the standard formula: Pre-pregnancy Weight / (Height in meters)^2. 
+       This provides a clean, uniform predictor based entirely on early 
+       pregnancy metrics.
+
+3. DATA LEAKAGE PREVENTION
+Variables containing future information (post-prediction-time) are 
+strictly isolated from the main model to prevent target leakage.
+
+  3.1. Exclusion of Birth Weight ('birth_weight_g')
+       Neonatal birth weight is determined post-delivery and is inherently 
+       unavailable at the triage/admission decision point. To prevent data 
+       leakage, this column is completely excluded from the modeling phase 
+       (handled during feature selection).
+
+  3.2. Note on Meconium and Membrane Color
+       While 'meconium' manifests early in labor, it is acknowledged as 
+       a borderline data-leakage variable since membrane rupture may 
+       occur intrapartum. Per project guidelines, it is excluded from the 
+       primary prediction model and reserved strictly for sensitivity 
+       analyses.
+--------------------------------------------------------------------
